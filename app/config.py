@@ -18,5 +18,8 @@ EMBED_DIM = 1024                                   # BGE-M3 dense
 
 FILING_MODE = os.environ.get("FILING_MODE", "propose")  # propose | auto
 FILING_CONFIDENCE_MIN = float(os.environ.get("FILING_CONFIDENCE_MIN", "0.85"))
+FILING_INTERVAL_S = int(os.environ.get("FILING_INTERVAL_S", "600"))
+FILING_BATCH = int(os.environ.get("FILING_BATCH", "10"))
+QWEN_MODEL = os.environ.get("QWEN_MODEL", "default")  # model name sent to the chat endpoint
 
 SKIP_DIRS = {".obsidian", ".imports", ".tools"}    # .staging IS scanned (unfiled searchable)

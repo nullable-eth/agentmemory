@@ -113,6 +113,70 @@ async def hybrid_search(c, *, qvec, qtext, node=None, tags=None,
         _vec(qvec), qtext or "", node, tags, after, before, k)
 
 
+# ---------------------------------------------------- filing proposals (P4)
+async def insert_proposal(c, *, path, node, tags, confidence, rationale) -> int:
+    return await c.fetchval(
+        """INSERT INTO filing_proposals (path, proposed_node, proposed_tags,
+                                         confidence, rationale, status)
+           VALUES ($1,$2,$3,$4,$5,'pending') RETURNING id""",
+        path, node, tags, confidence, rationale)
+
+
+async def get_proposal(c, proposal_id: int):
+    return await c.fetchrow(
+        """SELECT id, path, proposed_node, proposed_tags, confidence, rationale,
+                  status, created_at, decided_at
+           FROM filing_proposals WHERE id=$1""", proposal_id)
+
+
+async def list_proposals(c, status: str = "pending"):
+    return await c.fetch(
+        """SELECT id, path, proposed_node, proposed_tags, confidence, rationale,
+                  status, created_at
+           FROM filing_proposals WHERE status=$1 ORDER BY id""", status)
+
+
+async def busy_paths(c) -> set:
+    """Paths with a live (pending/applied) proposal — not re-proposable."""
+    return {r["path"] for r in await c.fetch(
+        "SELECT path FROM filing_proposals WHERE status IN ('pending','applied')")}
+
+
+async def pending_above_floor(c, floor: float):
+    return await c.fetch(
+        """SELECT id, path, proposed_node, proposed_tags, confidence, rationale,
+                  status, created_at
+           FROM filing_proposals
+           WHERE status='pending' AND confidence >= $1 ORDER BY id""", floor)
+
+
+async def reject_proposal(c, proposal_id: int, note: str):
+    """Mark rejected, appending note to the existing rationale."""
+    await c.execute(
+        """UPDATE filing_proposals
+           SET status='rejected', rationale=COALESCE(rationale,'') || $2,
+               decided_at=now()
+           WHERE id=$1""", proposal_id, note)
+
+
+async def set_proposal_status(c, proposal_id: int, status: str):
+    await c.execute(
+        "UPDATE filing_proposals SET status=$2, decided_at=now() WHERE id=$1",
+        proposal_id, status)
+
+
+async def mark_proposal_applied(c, proposal_id: int):
+    await c.execute(
+        "UPDATE filing_proposals SET status='applied', decided_at=now() "
+        "WHERE id=$1", proposal_id)
+
+
+async def proposal_status_counts(c) -> dict:
+    rows = await c.fetch(
+        "SELECT status, count(*) AS n FROM filing_proposals GROUP BY status")
+    return {r["status"]: r["n"] for r in rows}
+
+
 async def staging_counts(c) -> dict:
     rows = await c.fetch(
         """SELECT CASE

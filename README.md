@@ -102,6 +102,12 @@ Any OpenAI-compatible servers work; this is the known-good combination:
 | `EMBED_MAX_CHARS` | `6000` | Chunk split threshold |
 | `FILING_MODE` | `propose` | `propose` or `auto` — whether filing proposals apply themselves |
 | `FILING_CONFIDENCE_MIN` | `0.85` | Auto-apply confidence floor |
+| `FILING_INTERVAL_S` | `600` | Filing-proposal cycle period |
+| `FILING_BATCH` | `10` | Max files proposed per cycle |
+| `QWEN_MODEL` | `default` | Model name sent to the chat endpoint |
+| `FILING_INTERVAL_S` | `600` | Filing-agent cycle period |
+| `FILING_BATCH` | `10` | Max files proposed per filing cycle |
+| `QWEN_MODEL` | `default` | Model name sent in chat-completion requests (llama.cpp ignores it; multi-model servers need the real name) |
 
 ## Run
 

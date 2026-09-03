@@ -20,6 +20,7 @@ from mcp.server.fastmcp import FastMCP
 from prometheus_client import generate_latest
 
 import db
+import filingloop
 import importloop
 import metrics
 import scanner
@@ -80,6 +81,19 @@ async def do_context(message_uuid: str, radius: int = 3):
             "window": body[marks[lo].start():end]}
 
 
+async def do_list_proposals(status: str = "pending") -> list:
+    p = await db.pool()
+    async with p.acquire() as c:
+        rows = await db.list_proposals(c, status)
+    return [{"id": r["id"], "path": r["path"],
+             "proposed_node": r["proposed_node"],
+             "proposed_tags": list(r["proposed_tags"]),
+             "confidence": float(r["confidence"]),
+             "rationale": r["rationale"], "status": r["status"],
+             "created_at": str(r["created_at"]) if r["created_at"] else None}
+            for r in rows]
+
+
 # ------------------------------------------------------------------------- MCP
 mcp = FastMCP("agentmemory", stateless_http=True, streamable_http_path="/")
 
@@ -107,16 +121,27 @@ async def get_context(message_uuid: str, radius: int = 3) -> dict:
     return await do_context(message_uuid, min(radius, 20))
 
 
+@mcp.tool()
+async def list_proposals(status: str = "pending") -> dict:
+    """List filing proposals for unfiled vault material: where the filing
+    agent thinks each .staging file belongs (target node, tags, confidence,
+    rationale) and its review status. Read-only — approval is admin-tier
+    REST. status: pending|approved|rejected|applied (default pending)."""
+    return {"proposals": await do_list_proposals(status)}
+
+
 # --------------------------------------------------------------------- FastAPI
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.pool()
     task = asyncio.create_task(scanner.scan_loop())
     import_task = asyncio.create_task(importloop.import_loop())
+    filing_task = asyncio.create_task(filingloop.filing_loop())
     async with mcp.session_manager.run():
         yield
     task.cancel()
     import_task.cancel()
+    filing_task.cancel()
 
 
 app = FastAPI(title="agentmemory", lifespan=lifespan)
@@ -185,3 +210,39 @@ async def scan_now():
     n = await scanner.scan_once()
     e = await scanner.embed_drain()
     return {"reindexed": n, "embedded": e}
+
+
+@app.get("/proposals", dependencies=[Depends(admin_auth)])
+async def get_proposals(status: str = Query("pending")):
+    return await do_list_proposals(status)
+
+
+@app.post("/proposals/{id}/approve", dependencies=[Depends(admin_auth)])
+async def approve_proposal(id: int):
+    try:
+        new_path = await filingloop.approve_one(id)
+    except LookupError:
+        raise HTTPException(404, "no such proposal")
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(409, str(e))
+    return {"applied_to": new_path}
+
+
+@app.post("/proposals/{id}/reject", dependencies=[Depends(admin_auth)])
+async def reject_proposal(id: int):
+    p = await db.pool()
+    async with p.acquire() as c:
+        row = await db.get_proposal(c, id)
+    if not row:
+        raise HTTPException(404, "no such proposal")
+    if row["status"] != "pending":
+        raise HTTPException(409, f"proposal {id} is {row['status']}, not pending")
+    async with p.acquire() as c:
+        await db.set_proposal_status(c, id, "rejected")
+    return {"id": id, "status": "rejected"}
+
+
+@app.post("/proposals/approve_all", dependencies=[Depends(admin_auth)])
+async def approve_all():
+    applied, failed = await filingloop.approve_many()
+    return {"applied": applied, "failed": failed}
