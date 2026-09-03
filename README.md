@@ -40,7 +40,49 @@ database holds derived data only and can be dropped and rebuilt at any time.
   extension available (`CREATE EXTENSION vector` is run by the schema).
 - An OpenAI-compatible embeddings endpoint (optional — lexical search works
   without it).
+- Optionally, an OpenAI-compatible chat endpoint for filing proposals.
 - The vault mounted read-write at `VAULT_ROOT`.
+
+## Reference stack (what this was built and tested against)
+
+Any OpenAI-compatible servers work; this is the known-good combination:
+
+- **Embeddings: BGE-M3** (GGUF, FP16) served by `llama.cpp` (`--embeddings`).
+  1024-dim dense output — matches the schema's `vector(1024)`; change both
+  together if you swap models. Hard-won sizing note: llama.cpp requires each
+  embedding input to fit one physical batch, so run with
+  `--ctx-size = --batch-size = --ubatch-size` ≥ your longest chunk in tokens
+  (chunks here cap at `EMBED_MAX_CHARS`=6000 chars ≈ ~2.7k tokens worst case;
+  we run 4096). Undersized batch → HTTP 500 `input is too large to process`;
+  the drain then truncates or quarantines rather than stalling, but sizing it
+  right is better.
+- **Filing LLM: a Qwen3-class instruct model (~27B)** on `llama.cpp`'s
+  OpenAI-compatible server. Anything that reliably returns strict JSON at low
+  temperature works; smaller models mostly cost filing precision, and
+  `FILING_MODE=propose` (the default) keeps a human approving until yours
+  earns `auto`.
+- **Postgres 16/17 + pgvector ≥ 0.8.** We run it on Kubernetes via the
+  CloudNativePG operator using the `tensorchord/vchord-postgres` image
+  (pgvector included), one dedicated database owned by a dedicated role — but
+  any Postgres with pgvector available satisfies the service; `schema.sql`
+  self-applies idempotently at startup, HNSW + GIN indexes included.
+
+## Quickstart: a searchable RAG from your own Claude export
+
+1. Request a data export (Claude → Settings → Privacy → Export data) and
+   download the zip(s) — new-style exports are a manifest of one-time,
+   browser-gated links, so download them in your browser.
+2. Create your vault folder and drop the zips in `<vault>/.imports/`.
+3. Render them: `VAULT_ROOT=<vault> python app/importer/import_export.py`
+   — every conversation becomes verbatim markdown under `<vault>/.staging/`,
+   each message behind a `<!-- msg:uuid -->` marker (the chunk-identity
+   contract everything else builds on). Re-runs are idempotent and merges are
+   by message uuid, so repeat exports only add.
+4. Run the service (see **Run** below) with the vault mounted and `PG_DSN`
+   set. First scan indexes everything; embeddings backfill in the background;
+   `/search` and the `/mcp` tools answer from then on. Organizing files out
+   of `.staging/` into topic folders ("nodes") is optional — search works
+   either way; nodes add filtering and the filing-proposal workflow.
 
 ## Configuration (all via environment)
 
