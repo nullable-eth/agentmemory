@@ -26,8 +26,10 @@ CREATE TABLE IF NOT EXISTS chunks (
   text         text NOT NULL,
   tsv          tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
   embedding    vector(1024),                  -- BGE-M3 dense; null = backlog
+  embed_failed boolean NOT NULL DEFAULT false, -- poison chunk: skip, lexical-only
   UNIQUE (document_id, message_uuid, ordinal)
 );
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embed_failed boolean NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS filing_proposals (
   id            bigserial PRIMARY KEY,

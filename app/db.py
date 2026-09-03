@@ -59,8 +59,12 @@ async def replace_chunks(c, document_id: int, rows):
 
 async def fetch_embed_backlog(c, limit: int):
     return await c.fetch(
-        "SELECT id, text FROM chunks WHERE embedding IS NULL "
+        "SELECT id, text FROM chunks WHERE embedding IS NULL AND NOT embed_failed "
         "ORDER BY id LIMIT $1", limit)
+
+
+async def mark_embed_failed(c, chunk_id: int):
+    await c.execute("UPDATE chunks SET embed_failed=true WHERE id=$1", chunk_id)
 
 
 async def store_embeddings(c, pairs):

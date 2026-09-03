@@ -109,8 +109,31 @@ async def embed_batch(client: httpx.AsyncClient, texts):
     return [d["embedding"] for d in data]
 
 
+async def _embed_one_resilient(client, c, chunk_id: int, text: str) -> bool:
+    """Try full, then progressively halved prefixes of the EMBED COPY (stored
+    text stays verbatim; a prefix embedding beats no dense leg at all).
+    Persistent failure marks the chunk embed_failed — lexical-only forever
+    rather than blocking the backlog."""
+    t = vaultio.embed_text(text) or " "
+    while len(t) >= 400:
+        try:
+            vecs = await embed_batch(client, [t])
+            await db.store_embeddings(c, [(chunk_id, vecs[0])])
+            return True
+        except httpx.HTTPStatusError:
+            t = t[: len(t) // 2]
+        except httpx.HTTPError:
+            raise                      # transport problem, not this chunk's fault
+    await db.mark_embed_failed(c, chunk_id)
+    metrics.EMBED_FAILED.inc()
+    log.warning("chunk %d unembeddable even truncated; marked embed_failed", chunk_id)
+    return False
+
+
 async def embed_drain():
-    """Drain the null-embedding backlog; resumable, state lives in the DB."""
+    """Drain the null-embedding backlog; resumable, state lives in the DB.
+    A failing batch degrades to per-item; a failing item degrades to truncated
+    prefixes; a hopeless item is marked and skipped — never head-of-line."""
     if not EMBED_URL:
         return 0
     done = 0
@@ -121,10 +144,15 @@ async def embed_drain():
                 rows = await db.fetch_embed_backlog(c, EMBED_BATCH)
                 if not rows:
                     break
-                vecs = await embed_batch(
-                    client, [vaultio.embed_text(r["text"]) or " " for r in rows])
-                await db.store_embeddings(c, list(zip([r["id"] for r in rows], vecs)))
-                done += len(rows)
+                try:
+                    vecs = await embed_batch(
+                        client, [vaultio.embed_text(r["text"]) or " " for r in rows])
+                    await db.store_embeddings(c, list(zip([r["id"] for r in rows], vecs)))
+                    done += len(rows)
+                except httpx.HTTPStatusError:
+                    for r in rows:      # isolate the poison item(s)
+                        if await _embed_one_resilient(client, c, r["id"], r["text"]):
+                            done += 1
                 metrics.DEP_UP.labels(dep="embeddings").set(1)
     return done
 
@@ -144,7 +172,7 @@ async def scan_loop():
         p = await db.pool()
         async with p.acquire() as c:
             backlog = await c.fetchval(
-                "SELECT count(*) FROM chunks WHERE embedding IS NULL")
+                "SELECT count(*) FROM chunks WHERE embedding IS NULL AND NOT embed_failed")
             metrics.EMBED_BACKLOG.set(backlog)
             for k, v in (await db.staging_counts(c)).items():
                 metrics.STAGING.labels(state=k).set(v)

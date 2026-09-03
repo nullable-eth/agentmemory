@@ -17,3 +17,4 @@ SEARCH_LAT = Histogram("agentmemory_search_latency_seconds", "Search latency")
 IMPORT_RUNS = Counter("agentmemory_import_runs_total", "Import runs", ["result"])
 CHECK_FAILS = Counter("agentmemory_check_failures_total",
                       "unpack --check failures (completeness contract)")
+EMBED_FAILED = Counter("agentmemory_embed_failed_total", "Chunks marked unembeddable (lexical-only)")
