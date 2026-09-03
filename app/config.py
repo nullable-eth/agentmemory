@@ -18,6 +18,9 @@ EMBED_DIM = 1024                                   # BGE-M3 dense
 
 FILING_MODE = os.environ.get("FILING_MODE", "propose")  # propose | auto
 FILING_CONFIDENCE_MIN = float(os.environ.get("FILING_CONFIDENCE_MIN", "0.85"))
+# Auto mode only: node to file below-floor items into (a catch-all like a
+# "One-Offs" folder). Empty = leave them pending in .staging for a human.
+FILING_LOW_CONF_NODE = os.environ.get("FILING_LOW_CONF_NODE", "")
 FILING_INTERVAL_S = int(os.environ.get("FILING_INTERVAL_S", "600"))
 FILING_BATCH = int(os.environ.get("FILING_BATCH", "10"))
 QWEN_MODEL = os.environ.get("QWEN_MODEL", "default")  # model name sent to the chat endpoint

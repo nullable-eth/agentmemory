@@ -28,8 +28,8 @@ import metrics
 import scanner
 import vaultio
 from config import (FILING_BATCH, FILING_CONFIDENCE_MIN, FILING_INTERVAL_S,
-                    FILING_MODE, MODEL_API_KEY, QWEN_MODEL, QWEN_URL,
-                    VAULT_ROOT)
+                    FILING_LOW_CONF_NODE, FILING_MODE, MODEL_API_KEY,
+                    QWEN_MODEL, QWEN_URL, VAULT_ROOT)
 
 log = logging.getLogger("agentmemory")
 
@@ -325,6 +325,24 @@ async def run_cycle() -> None:
                 if parsed is None:
                     log.warning("filing: unusable reply for %s: %.300s", rel, raw)
                     continue
+                # Auto-mode catch-all: below-floor items reroute to the
+                # configured catch-all node (original proposal preserved in
+                # the rationale, so a later audit can promote them out).
+                below = parsed["confidence"] < FILING_CONFIDENCE_MIN
+                rerouted = False
+                if (FILING_MODE == "auto" and below
+                        and FILING_LOW_CONF_NODE
+                        and FILING_LOW_CONF_NODE in nodes):
+                    parsed = {
+                        "node": FILING_LOW_CONF_NODE,
+                        "tags": parsed["tags"],
+                        "confidence": parsed["confidence"],
+                        "rationale": (f"[catch-all; model proposed "
+                                      f"{parsed['node']} @ "
+                                      f"{parsed['confidence']:.2f}] "
+                                      + parsed["rationale"])[:200],
+                    }
+                    rerouted = True
                 async with pool.acquire() as c:
                     pid = await db.insert_proposal(
                         c, path=rel, node=parsed["node"], tags=parsed["tags"],
@@ -333,7 +351,7 @@ async def run_cycle() -> None:
                 log.info("filing: proposal %d: %s -> %s (%.2f)",
                          pid, rel, parsed["node"], parsed["confidence"])
                 if FILING_MODE == "auto":
-                    if parsed["confidence"] >= FILING_CONFIDENCE_MIN:
+                    if (not below) or rerouted:
                         row = {"id": pid, "path": rel,
                                "proposed_node": parsed["node"],
                                "proposed_tags": parsed["tags"],
@@ -347,6 +365,8 @@ async def run_cycle() -> None:
                         else:
                             auto_applied += 1
                             metrics.AUTO_APPLIED.inc()
+                            if rerouted:
+                                metrics.BELOW_FLOOR.inc()
                             log.info("filing: auto-applied %s -> %s",
                                      rel, new_path)
                     else:
