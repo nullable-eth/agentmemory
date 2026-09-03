@@ -10,8 +10,8 @@ import httpx
 import db
 import metrics
 import vaultio
-from config import (EMBED_BATCH, EMBED_MAX_CHARS, EMBED_MODEL, EMBED_URL,
-                    MODEL_API_KEY, SCAN_INTERVAL_S, SKIP_DIRS, VAULT_ROOT)
+from config import (EMBED_API_KEY, EMBED_BATCH, EMBED_MAX_CHARS, EMBED_MODEL,
+                    EMBED_URL, SCAN_INTERVAL_S, SKIP_DIRS, VAULT_ROOT)
 
 log = logging.getLogger("agentmemory")
 
@@ -102,7 +102,7 @@ async def index_file(c, rel: str, text: str, mtime: float):
 async def embed_batch(client: httpx.AsyncClient, texts):
     r = await client.post(
         f"{EMBED_URL.rstrip('/')}/v1/embeddings",
-        headers={"Authorization": f"Bearer {MODEL_API_KEY}"} if MODEL_API_KEY else {},
+        headers={"Authorization": f"Bearer {EMBED_API_KEY}"} if EMBED_API_KEY else {},
         json={"input": texts, "model": EMBED_MODEL}, timeout=120)
     r.raise_for_status()
     data = sorted(r.json()["data"], key=lambda d: d["index"])

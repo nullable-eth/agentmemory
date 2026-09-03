@@ -1,7 +1,7 @@
 """Filing agent (P4): turn unfiled .staging material into filing proposals.
 
 Every FILING_INTERVAL_S the loop walks <VAULT_ROOT>/.staging/ and asks the
-chat endpoint (QWEN_URL) where each unfiled file belongs — target node,
+chat endpoint (CHAT_URL) where each unfiled file belongs — target node,
 tags, confidence, rationale — recording each answer as a 'pending' row in
 filing_proposals. With FILING_MODE=auto, proposals at/above
 FILING_CONFIDENCE_MIN apply themselves; in propose mode (the default)
@@ -28,8 +28,8 @@ import metrics
 import scanner
 import vaultio
 from config import (FILING_BATCH, FILING_CONFIDENCE_MIN, FILING_INTERVAL_S,
-                    FILING_LOW_CONF_NODE, FILING_MODE, MODEL_API_KEY,
-                    QWEN_MODEL, QWEN_URL, VAULT_ROOT)
+                    CHAT_API_KEY, CHAT_MODEL, CHAT_URL,
+                    FILING_LOW_CONF_NODE, FILING_MODE, VAULT_ROOT)
 
 log = logging.getLogger("agentmemory")
 
@@ -226,12 +226,12 @@ def _user_prompt(rel: str, fm: dict, body: str) -> str:
 
 
 async def _chat(client: httpx.AsyncClient, system: str, user: str) -> str:
-    headers = ({"Authorization": f"Bearer {MODEL_API_KEY}"}
-               if MODEL_API_KEY else {})
+    headers = ({"Authorization": f"Bearer {CHAT_API_KEY}"}
+               if CHAT_API_KEY else {})
     r = await client.post(
-        f"{QWEN_URL.rstrip('/')}/v1/chat/completions",
+        f"{CHAT_URL.rstrip('/')}/v1/chat/completions",
         headers=headers,
-        json={"model": QWEN_MODEL, "temperature": 0.1,
+        json={"model": CHAT_MODEL, "temperature": 0.1,
               "messages": [{"role": "system", "content": system},
                            {"role": "user", "content": user}]},
         timeout=300)
@@ -300,7 +300,7 @@ async def _candidates() -> list[tuple[str, str]]:
 async def run_cycle() -> None:
     """One filing pass. filing_loop guards the whole body, so nothing here
     may kill the loop."""
-    if not QWEN_URL:
+    if not CHAT_URL:
         return
     nodes = _nodes()
     if not nodes:

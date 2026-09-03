@@ -92,8 +92,11 @@ Any OpenAI-compatible servers work; this is the known-good combination:
 | `VAULT_ROOT` | `/vault` | Mounted vault path |
 | `EMBED_URL` | *(empty)* | OpenAI-compatible embeddings base URL; empty disables the dense leg |
 | `EMBED_MODEL` | `embedding` | Model name sent in embeddings requests (llama.cpp ignores it; multi-model servers need the real name) |
-| `QWEN_URL` | *(empty)* | OpenAI-compatible chat base URL (filing agent) |
-| `MODEL_API_KEY` | *(empty)* | Bearer key sent to both model endpoints |
+| `CHAT_URL` | *(empty)* | OpenAI-compatible chat base URL for the filing agent; empty disables filing |
+| `CHAT_MODEL` | `default` | Model name sent to the chat endpoint |
+| `CHAT_API_KEY` | *(empty)* | Bearer key for the chat endpoint |
+| `EMBED_API_KEY` | *(empty)* | Bearer key for the embeddings endpoint |
+| `MODEL_API_KEY` | *(empty)* | Shared-key fallback for both when one provider serves them |
 | `READ_TOKEN` | *(empty)* | Bearer token for `/search` `/context`; empty = open |
 | `ADMIN_TOKEN` | *(empty)* | Bearer token for `/scan` |
 | `SCAN_INTERVAL_S` | `300` | Vault sweep period |
@@ -105,10 +108,8 @@ Any OpenAI-compatible servers work; this is the known-good combination:
 | `FILING_LOW_CONF_NODE` | *(empty)* | Auto mode: catch-all node for below-floor items (original proposal kept in the rationale); empty leaves them pending |
 | `FILING_INTERVAL_S` | `600` | Filing-proposal cycle period |
 | `FILING_BATCH` | `10` | Max files proposed per cycle |
-| `QWEN_MODEL` | `default` | Model name sent to the chat endpoint |
 | `FILING_INTERVAL_S` | `600` | Filing-agent cycle period |
 | `FILING_BATCH` | `10` | Max files proposed per filing cycle |
-| `QWEN_MODEL` | `default` | Model name sent in chat-completion requests (llama.cpp ignores it; multi-model servers need the real name) |
 
 ## Run
 
