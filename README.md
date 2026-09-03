@@ -55,6 +55,7 @@ database holds derived data only and can be dropped and rebuilt at any time.
 | `READ_TOKEN` | *(empty)* | Bearer token for `/search` `/context`; empty = open |
 | `ADMIN_TOKEN` | *(empty)* | Bearer token for `/scan` |
 | `SCAN_INTERVAL_S` | `300` | Vault sweep period |
+| `IMPORT_INTERVAL_S` | `120` | `.imports/` inbox poll period (export-zip watcher) |
 | `EMBED_BATCH` | `16` | Chunks per embeddings request |
 | `EMBED_MAX_CHARS` | `6000` | Chunk split threshold |
 | `FILING_MODE` | `propose` | `propose` or `auto` — whether filing proposals apply themselves |

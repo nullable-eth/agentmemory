@@ -11,6 +11,7 @@ READ_TOKEN = os.environ.get("READ_TOKEN", "")
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
 
 SCAN_INTERVAL_S = int(os.environ.get("SCAN_INTERVAL_S", "300"))
+IMPORT_INTERVAL_S = int(os.environ.get("IMPORT_INTERVAL_S", "120"))
 EMBED_BATCH = int(os.environ.get("EMBED_BATCH", "16"))
 EMBED_MAX_CHARS = int(os.environ.get("EMBED_MAX_CHARS", "6000"))
 EMBED_DIM = 1024                                   # BGE-M3 dense

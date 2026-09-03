@@ -20,6 +20,7 @@ from mcp.server.fastmcp import FastMCP
 from prometheus_client import generate_latest
 
 import db
+import importloop
 import metrics
 import scanner
 import vaultio
@@ -111,9 +112,11 @@ async def get_context(message_uuid: str, radius: int = 3) -> dict:
 async def lifespan(app: FastAPI):
     await db.pool()
     task = asyncio.create_task(scanner.scan_loop())
+    import_task = asyncio.create_task(importloop.import_loop())
     async with mcp.session_manager.run():
         yield
     task.cancel()
+    import_task.cancel()
 
 
 app = FastAPI(title="agentmemory", lifespan=lifespan)
