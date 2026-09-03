@@ -2,7 +2,8 @@ FROM python:3.12-slim
 WORKDIR /srv/app
 RUN pip install --no-cache-dir \
     fastapi==0.115.* uvicorn==0.30.* asyncpg==0.29.* httpx==0.27.* \
-    prometheus-client==0.20.*
+    prometheus-client==0.20.* \
+    'mcp>=1.9,<2'
 COPY app/ /srv/app/
 EXPOSE 8080
 USER 1000:1000
