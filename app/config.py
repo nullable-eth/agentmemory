@@ -4,6 +4,7 @@ import os
 VAULT_ROOT = os.environ.get("VAULT_ROOT", "/vault")
 PG_DSN = os.environ["PG_DSN"]                      # required
 EMBED_URL = os.environ.get("EMBED_URL", "")        # BGE-M3 OpenAI-compat base
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "embedding")  # model name sent to /v1/embeddings
 QWEN_URL = os.environ.get("QWEN_URL", "")          # llama.cpp OpenAI-compat base
 MODEL_API_KEY = os.environ.get("MODEL_API_KEY", "")  # llama.cpp startup key
 READ_TOKEN = os.environ.get("READ_TOKEN", "")

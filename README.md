@@ -49,6 +49,7 @@ database holds derived data only and can be dropped and rebuilt at any time.
 | `PG_DSN` | *(required)* | `postgresql://user:pass@host:5432/db` |
 | `VAULT_ROOT` | `/vault` | Mounted vault path |
 | `EMBED_URL` | *(empty)* | OpenAI-compatible embeddings base URL; empty disables the dense leg |
+| `EMBED_MODEL` | `embedding` | Model name sent in embeddings requests (llama.cpp ignores it; multi-model servers need the real name) |
 | `QWEN_URL` | *(empty)* | OpenAI-compatible chat base URL (filing agent) |
 | `MODEL_API_KEY` | *(empty)* | Bearer key sent to both model endpoints |
 | `READ_TOKEN` | *(empty)* | Bearer token for `/search` `/context`; empty = open |
