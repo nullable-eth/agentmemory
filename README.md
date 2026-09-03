@@ -108,8 +108,6 @@ Any OpenAI-compatible servers work; this is the known-good combination:
 | `FILING_LOW_CONF_NODE` | *(empty)* | Auto mode: catch-all node for below-floor items (original proposal kept in the rationale); empty leaves them pending |
 | `FILING_INTERVAL_S` | `600` | Filing-proposal cycle period |
 | `FILING_BATCH` | `10` | Max files proposed per cycle |
-| `FILING_INTERVAL_S` | `600` | Filing-agent cycle period |
-| `FILING_BATCH` | `10` | Max files proposed per filing cycle |
 
 ## Run
 
