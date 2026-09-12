@@ -163,6 +163,26 @@ they are unarchived but not unaccounted for. This is not a security boundary
 — anything that can reach the endpoint can send a known name — but the
 default is inclusive, so nothing falls out of the archive by omission.
 
+**Context compaction.** When a request would overflow the model's window, the
+proxy summarises the middle of the conversation and forwards
+`[system…, state summary, recent tail]` instead, so no client can run the
+model out of context regardless of how it manages history. Because the vault
+already holds the conversation verbatim, this costs nothing archivally — the
+transcript stays complete, only the forwarded prompt shrinks, and the reply
+records `context_compacted` so the archive doesn't imply the model saw
+everything. Token counts are exact, via the server's own `/apply-template`
+and `/tokenize`; the window size comes from `/props`.
+
+The proxy holds no API key and does not start holding one for this: its
+`/props`, `/tokenize` and summarising calls reuse the **caller's**
+`Authorization` header, so they are made on behalf of someone already
+entitled to use the model. No header, no compaction. Every failure path —
+tokenizer unavailable, summariser refusing, a tail that is itself over budget
+— forwards the request unchanged rather than mangling it, and a cut is never
+placed where it would separate an assistant `tool_calls` from its `tool`
+result. Summaries are cached by the span they cover, so a client that resends
+its whole history every turn pays for one summary rather than one per turn.
+
 | Variable | Default | Purpose |
 |---|---|---|
 | `CAPTURE_UPSTREAM` | `http://127.0.0.1:8000` | Where to forward |
@@ -178,6 +198,12 @@ default is inclusive, so nothing falls out of the archive by omission.
 | `CAPTURE_TITLE_MAX` | `60` | Title length taken from the first user message |
 | `CAPTURE_CONNECT_TIMEOUT_S` | `5` | Upstream connect timeout; there is no read timeout |
 | `CAPTURE_NOLOG_CLIENTS` | `agentmemory-filing` | Comma-separated `X-Capture-Client` names whose exchanges are proxied but never written |
+| `CAPTURE_COMPACT` | `1` | Summarise the middle of a conversation that would overflow the context |
+| `CAPTURE_COMPACT_AT` | `0.75` | Fraction of `n_ctx` a prompt may occupy before compaction |
+| `CAPTURE_COMPACT_KEEP_TAIL` | `8` | Recent messages kept verbatim |
+| `CAPTURE_COMPACT_RESERVE` | `8192` | Generation headroom assumed when a request sets no `max_tokens` |
+| `CAPTURE_COMPACT_SUMMARY_TOKENS` | `2000` | Cap on the state summary |
+| `CAPTURE_COMPACT_CACHE_MAX` | `256` | Cached summaries, keyed by the span they cover |
 
 Clients may also send `X-Capture-Conversation-Id` (name your own conversation
 — an alert-run id, say) and `X-Capture-Title`. Neither affects whether an

@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from prometheus_client import generate_latest
 
-from . import config, forward, metrics, normalize, sse, store
+from . import compact, config, forward, metrics, normalize, sse, store
 from .writer import Writer
 
 logging.basicConfig(level=logging.INFO,
@@ -37,6 +37,7 @@ writer = Writer()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.client = forward.client()
+    app.state.compactor = compact.Compactor(app.state.client)
     consume = asyncio.create_task(writer.consume())
     sweep = asyncio.create_task(writer.sweep())
     log.info("capture: proxying %s -> %s, vault %s/%s",
@@ -75,7 +76,7 @@ async def status():
 
 
 # ------------------------------------------------------------------ capture
-def _record(parsed, acc, buf, started, headers, truncated) -> None:
+def _record(parsed, acc, buf, started, headers, truncated, compaction=None) -> None:
     """Build one capture record and hand it to the writer. Never raises."""
     try:
         msgs = normalize.request_messages(parsed)
@@ -98,6 +99,11 @@ def _record(parsed, acc, buf, started, headers, truncated) -> None:
                     reply.truncated = truncated
         if truncated:
             metrics.TRUNCATED.inc()
+        # The archive keeps the full history, so the transcript reads as if
+        # nothing was dropped — which would be misleading on its own. Record
+        # that the model answered from a summary, and of what.
+        if reply is not None and (compaction or {}).get("compacted"):
+            reply.extra["context_compacted"] = compaction
         writer.submit({
             "messages": msgs,
             "reply": reply,
@@ -137,6 +143,22 @@ async def proxy(path: str, request: Request):
     elif endpoint in UNADAPTED:
         metrics.UNCAPTURED.labels(endpoint=endpoint).inc()
 
+    # Compaction happens after capture has its copy of the original request and
+    # before anything is forwarded, so the archive records what the client sent
+    # while the model receives something that fits. Any failure forwards the
+    # request untouched.
+    compaction = {"compacted": False}
+    if parsed is not None:
+        try:
+            new_body, compaction = await request.app.state.compactor.maybe_compact(
+                parsed, request.headers.get("authorization") or "")
+        except Exception:
+            log.exception("compact: unexpected failure; forwarding unchanged")
+            new_body = None
+        if new_body is not None:
+            body = json.dumps(new_body).encode("utf-8")
+            metrics.COMPACTED.inc()
+
     upstream = client.build_request(
         request.method, forward.url_for(path, request.url.query),
         headers=forward.upstream_headers(request.headers), content=body)
@@ -171,7 +193,8 @@ async def proxy(path: str, request: Request):
         finally:
             await resp.aclose()
             if capture:
-                _record(parsed, acc, buf, started, request.headers, truncated)
+                _record(parsed, acc, buf, started, request.headers, truncated,
+                        compaction)
 
     return StreamingResponse(tee(), status_code=resp.status_code,
                              headers=forward.downstream_headers(resp.headers))

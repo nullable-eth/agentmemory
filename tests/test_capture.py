@@ -26,6 +26,8 @@ os.environ.update(
     CAPTURE_IDLE_S="0",
     CAPTURE_SWEEP_S="3600",          # sweeps are driven by hand here
     CAPTURE_MAX_OPEN_S="999999",
+    CAPTURE_COMPACT_RESERVE="100",
+    CAPTURE_COMPACT_KEEP_TAIL="4",
     # filingloop -> scanner -> config demands this at import; nothing here
     # opens a connection.
     PG_DSN="postgresql://unused/unused",
@@ -36,7 +38,7 @@ sys.path.insert(0, str(ROOT / "app"))
 import httpx                                                    # noqa: E402
 import uvicorn                                                  # noqa: E402
 from fastapi import FastAPI, Request                            # noqa: E402
-from fastapi.responses import StreamingResponse                 # noqa: E402
+from fastapi.responses import JSONResponse, StreamingResponse                # noqa: E402
 
 import vaultio                                                  # noqa: E402
 from proxy.main import app as proxy_app, writer                 # noqa: E402
@@ -63,9 +65,43 @@ def _pieces(text: str, n: int = 7):
     return [text[i:i + n] for i in range(0, len(text), n)] if text else []
 
 
+# --- the three endpoints the compactor uses on the model server -------------
+FAKE_N_CTX = 2000
+LAST_UPSTREAM: dict = {}
+
+
+@fake.get("/props")
+async def props(request: Request):
+    if not request.headers.get("authorization"):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return {"default_generation_settings": {"n_ctx": FAKE_N_CTX},
+            "total_slots": 1}
+
+
+@fake.post("/apply-template")
+async def apply_template(request: Request):
+    b = await request.json()
+    return {"prompt": "\n".join(
+        f"<|{m.get('role')}|>{m.get('content') or ''}" for m in b["messages"])}
+
+
+@fake.post("/tokenize")
+async def tokenize(request: Request):
+    b = await request.json()
+    return {"tokens": [0] * (len(b.get("content", "")) // 4)}   # 1 tok / 4 chars
+
+
 @fake.post("/v1/chat/completions")
 async def completions(request: Request):
     body = await request.json()
+    LAST_UPSTREAM.clear()
+    LAST_UPSTREAM.update(body)
+    last = (body.get("messages") or [{}])[-1].get("content") or ""
+    if last.startswith("STOP."):                 # the compactor's summary call
+        return {"id": "s", "model": "m", "choices": [
+            {"index": 0, "finish_reason": "stop", "message": {
+                "role": "assistant",
+                "content": "STATE: user is migrating the cluster; PVCs renamed."}}]}
     spec = dict(NEXT)
     if not body.get("stream"):
         msg = {"role": "assistant", "content": spec.get("content", "")}
@@ -413,6 +449,71 @@ async def run_all():
     check("unknown client is captured like any other",
           len([f for f in capture_files() if "Rogue client" in f.name]) == 1,
           str([f.name for f in capture_files()]))
+
+    # --------------------------------------------------------------- [9c]
+    print("\n[9c] context compaction")
+    AUTH = {"Authorization": "Bearer testkey"}
+    NEXT = {"content": "short answer"}
+    await chat([{"role": "user", "content": "tiny"}], stream=False, headers=AUTH)
+    check("a small conversation is forwarded untouched",
+          len(LAST_UPSTREAM.get("messages", [])) == 1
+          and not any(str(m.get("content","")).startswith("[COMPACTED")
+                      for m in LAST_UPSTREAM["messages"]),
+          str(len(LAST_UPSTREAM.get("messages", []))))
+
+    # n_ctx 2000 * 0.75 - 100 reserve = 1400 tokens = ~5600 chars at 4 chars/tok
+    big = [{"role": "system", "content": "You are the cluster agent."}]
+    for i in range(30):
+        big.append({"role": "user", "content": f"question {i} " + "x" * 300})
+        big.append({"role": "assistant", "content": f"answer {i} " + "y" * 300})
+    big.append({"role": "user", "content": "final question, please answer"})
+    NEXT = {"content": "compacted answer"}
+    await chat(big, stream=False, headers=AUTH)
+    up = LAST_UPSTREAM.get("messages", [])
+    check("an oversized conversation is compacted", len(up) < len(big),
+          f"{len(big)} -> {len(up)}")
+    check("the system prompt survives verbatim",
+          up and up[0]["role"] == "system"
+          and up[0]["content"] == "You are the cluster agent.", str(up[:1])[:120])
+    check("a state summary replaces the middle",
+          any("[COMPACTED CONVERSATION STATE]" in str(m.get("content", ""))
+              for m in up))
+    check("the recent tail survives verbatim",
+          up and up[-1]["content"] == "final question, please answer",
+          str(up[-1])[:120] if up else "none")
+    await settle()
+    sweep()
+    cf = [f for f in capture_files() if "question 0" in f.name]
+    check("the transcript archives the FULL history, not the compacted one",
+          len(cf) == 1 and cf[0].read_text(encoding="utf-8").count("question ") >= 30,
+          str([f.name for f in capture_files()]))
+    if cf:
+        ctext = cf[0].read_text(encoding="utf-8")
+        check("and records that the model answered from a summary",
+              "context_compacted" in ctext)
+
+    print("\n[9d] compaction never breaks a request")
+    NEXT = {"content": "unauth answer"}
+    await chat(big, stream=False)          # no Authorization -> cannot compact
+    check("without a key the request is forwarded whole, not refused",
+          len(LAST_UPSTREAM.get("messages", [])) == len(big),
+          f"{len(LAST_UPSTREAM.get('messages', []))} vs {len(big)}")
+
+    from proxy.compact import Compactor
+    paired = [{"role": "system", "content": "s"}]
+    for i in range(6):
+        paired.append({"role": "user", "content": f"u{i}"})
+        paired.append({"role": "assistant", "content": None, "tool_calls": [
+            {"id": f"c{i}", "function": {"name": "kubectl", "arguments": "{}"}}]})
+        paired.append({"role": "tool", "tool_call_id": f"c{i}", "content": f"r{i}"})
+    head, cut = Compactor._split(paired)
+    tail = paired[cut:]
+    ids = {tc["id"] for m in tail for tc in (m.get("tool_calls") or [])}
+    check("a cut never orphans a tool result from its call",
+          tail[0]["role"] != "tool"
+          and all(m.get("tool_call_id") in ids
+                  for m in tail if m["role"] == "tool"),
+          f"cut={cut} roles={[m['role'] for m in tail]}")
 
     # --------------------------------------------------------------- [10]
     print("\n[10] filing integration")

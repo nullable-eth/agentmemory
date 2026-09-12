@@ -61,3 +61,21 @@ NOLOG_CLIENTS = {c.strip() for c in os.environ.get(
     "CAPTURE_NOLOG_CLIENTS", "agentmemory-filing").split(",") if c.strip()}
 
 CONNECT_TIMEOUT_S = float(os.environ.get("CAPTURE_CONNECT_TIMEOUT_S", "5"))
+
+# ----------------------------------------------------------------- compaction
+# Keep a conversation inside the model's window regardless of which client sent
+# it. Off means oversized requests go upstream untouched and fail there, which
+# is what happened before this existed.
+COMPACT_ENABLED = os.environ.get("CAPTURE_COMPACT", "1") not in ("0", "false", "no")
+# Fraction of n_ctx (read from the server's /props) a prompt may occupy before
+# the middle of it is summarised.
+COMPACT_AT = float(os.environ.get("CAPTURE_COMPACT_AT", "0.75"))
+# Messages at the end kept verbatim. Nudged earlier when the cut would split an
+# assistant tool_call from its tool result.
+COMPACT_KEEP_TAIL = int(os.environ.get("CAPTURE_COMPACT_KEEP_TAIL", "8"))
+# Generation headroom assumed when a request sets no max_tokens.
+COMPACT_RESERVE = int(os.environ.get("CAPTURE_COMPACT_RESERVE", "8192"))
+COMPACT_SUMMARY_TOKENS = int(os.environ.get("CAPTURE_COMPACT_SUMMARY_TOKENS", "2000"))
+# Summaries are cached by the exact span they cover, so a client that resends
+# its whole history every turn pays for one summary, not one per turn.
+COMPACT_CACHE_MAX = int(os.environ.get("CAPTURE_COMPACT_CACHE_MAX", "256"))

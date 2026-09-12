@@ -17,6 +17,8 @@ UNCAPTURED = Counter("capture_uncaptured_total",
                      ["endpoint"])
 TRUNCATED = Counter("capture_truncated_total",
                     "Streams the client hung up on mid-flight")
+COMPACTED = Counter("capture_compacted_total",
+                    "Requests whose middle was summarised to fit the context")
 # Machine traffic that identified itself as write-nothing. No transcript
 # exists for these, so this counter is the only record that they happened —
 # which is the point: unarchived is not the same as unaccounted for.
