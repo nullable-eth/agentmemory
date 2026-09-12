@@ -34,9 +34,30 @@ MAX_CONVERSATIONS = int(os.environ.get("CAPTURE_MAX_CONVERSATIONS", "500"))
 MAX_BODY = int(os.environ.get("CAPTURE_MAX_BODY", str(64 << 20)))
 
 TITLE_MAX = int(os.environ.get("CAPTURE_TITLE_MAX", "60"))
-# Client hints. Neither can suppress capture — they only name a conversation
-# that the client already knows the identity of (cluster-agent's run id).
+# Client hints. Neither of these can affect whether a conversation is
+# captured — they only name one the client already knows the identity of
+# (cluster-agent's run id, say).
 HDR_CONV_ID = "x-capture-conversation-id"
 HDR_TITLE = "x-capture-title"
+
+# Self-identification, and the ONLY thing that suppresses a transcript.
+#
+# Machine traffic whose transcript would carry no information: the filing
+# agent's classification calls are a system prompt built from CLAUDE.md plus
+# every Scope.md, a user prompt quoting a file already in the vault, and a
+# verdict that is already persisted in filing_proposals. Archiving them would
+# duplicate the vault into itself, repeatedly.
+#
+# An allowlist rather than a boolean opt-out, deliberately: a client cannot
+# suppress itself by inventing a name. Only these exact values do, they are
+# set here rather than by the caller, and an unrecognised value is captured
+# and indexed like anything else. That also bounds the metric's label
+# cardinality. It is not a security boundary — anything that can reach the
+# endpoint can send a known name — but it is a far narrower hole than
+# honouring any value, and the traffic still shows up in
+# capture_suppressed_total even when no transcript is written.
+HDR_CLIENT = "x-capture-client"
+NOLOG_CLIENTS = {c.strip() for c in os.environ.get(
+    "CAPTURE_NOLOG_CLIENTS", "agentmemory-filing").split(",") if c.strip()}
 
 CONNECT_TIMEOUT_S = float(os.environ.get("CAPTURE_CONNECT_TIMEOUT_S", "5"))

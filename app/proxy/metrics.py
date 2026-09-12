@@ -17,6 +17,12 @@ UNCAPTURED = Counter("capture_uncaptured_total",
                      ["endpoint"])
 TRUNCATED = Counter("capture_truncated_total",
                     "Streams the client hung up on mid-flight")
+# Machine traffic that identified itself as write-nothing. No transcript
+# exists for these, so this counter is the only record that they happened —
+# which is the point: unarchived is not the same as unaccounted for.
+SUPPRESSED = Counter("capture_suppressed_total",
+                     "Exchanges proxied without writing a transcript",
+                     ["client"])
 DROPPED = Counter("capture_dropped_total", "Capture records dropped",
                   ["reason"])
 FLUSHES = Counter("capture_flush_total", "Conversation flushes", ["outcome"])

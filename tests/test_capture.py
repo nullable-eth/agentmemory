@@ -378,23 +378,48 @@ async def run_all():
         check("status endpoint answers", s.status_code == 200, s.text)
 
     # ---------------------------------------------------------------- [9]
-    print("\n[9] filing integration")
-    from filingloop import _dest_and_link, _unclassified
+    print("\n[9] identified machine traffic writes nothing")
+    NEXT = {"content": '{"node": "One-Offs", "tags": [], "confidence": 0.4}'}
+    before_files = set(capture_files())
+    before_index = set((VAULT / ".staging" / "Chats" / "Live Capture"
+                        / ".index").glob("*.json"))
+    obj = await chat([{"role": "system", "content": "huge CLAUDE.md here"},
+                      {"role": "user", "content": "Where does this file go?"}],
+                     stream=False,
+                     headers={"X-Capture-Client": "agentmemory-filing"})
+    await settle()
+    sweep()
+    check("suppressed call is still proxied normally",
+          isinstance(obj, dict) and "One-Offs" in
+          obj["choices"][0]["message"]["content"], str(obj)[:160])
+    check("no transcript written", set(capture_files()) == before_files,
+          str({f.name for f in set(capture_files()) - before_files}))
+    after_index = set((VAULT / ".staging" / "Chats" / "Live Capture"
+                       / ".index").glob("*.json"))
+    check("nothing buffered either", after_index == before_index,
+          str({f.name for f in after_index - before_index}))
+    async with httpx.AsyncClient(timeout=10) as c:
+        mt = (await c.get(f"{PROXY}/__capture/metrics")).text
+    check("but it is counted, not silently dropped",
+          'capture_suppressed_total{client="agentmemory-filing"} 1.0' in mt,
+          [l for l in mt.splitlines() if "suppressed" in l])
+
+    print("\n[9b] an unrecognised client name suppresses nothing")
+    NEXT = {"content": "captured as normal"}
+    await chat([{"role": "user", "content": "Rogue client question."}],
+               stream=False, headers={"X-Capture-Client": "not-on-the-list"})
+    await settle()
+    sweep()
+    check("unknown client is captured like any other",
+          len([f for f in capture_files() if "Rogue client" in f.name]) == 1,
+          str([f.name for f in capture_files()]))
+
+    # --------------------------------------------------------------- [10]
+    print("\n[10] filing integration")
+    from filingloop import _dest_and_link
     dest, link = _dest_and_link(".staging/Chats/Live Capture/x.md", "One-Offs")
     check("live capture files into the node's transcript folder",
           dest == "One-Offs/Chats/Full Transcripts/x.md", dest)
-    if alert_files:
-        afm = vaultio.parse_frontmatter(
-            alert_files[0].read_text(encoding="utf-8"))
-        got = _unclassified(afm, ["One-Offs"])
-        check("single-exchange capture routed without a model call",
-              isinstance(got, dict) and got["node"] == "One-Offs"
-              and got["confidence"] == 0.0, str(got))
-    mfm = vaultio.parse_frontmatter(main_file.read_text(encoding="utf-8"))
-    check("multi-exchange capture is classified normally",
-          _unclassified(mfm, ["One-Offs"]) is None)
-    check("a hand-written staging note is never short-circuited",
-          _unclassified({"status": "unfiled"}, ["One-Offs"]) is None)
 
 
 async def main() -> int:

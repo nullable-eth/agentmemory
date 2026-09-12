@@ -122,12 +122,18 @@ async def proxy(path: str, request: Request):
 
     parsed = None
     if endpoint == CHAT_PATH and request.method == "POST":
-        try:
-            candidate = json.loads(body.decode("utf-8", "replace"))
-        except ValueError:
-            candidate = None
-        if isinstance(candidate, dict) and candidate.get("messages"):
-            parsed = candidate
+        client_name = (request.headers.get(config.HDR_CLIENT) or "").strip()
+        if client_name in config.NOLOG_CLIENTS:
+            # Identified machine traffic: proxied exactly like anything else,
+            # just not written down. Counted so it is still accounted for.
+            metrics.SUPPRESSED.labels(client=client_name).inc()
+        else:
+            try:
+                candidate = json.loads(body.decode("utf-8", "replace"))
+            except ValueError:
+                candidate = None
+            if isinstance(candidate, dict) and candidate.get("messages"):
+                parsed = candidate
     elif endpoint in UNADAPTED:
         metrics.UNCAPTURED.labels(endpoint=endpoint).inc()
 

@@ -105,7 +105,7 @@ Any OpenAI-compatible servers work; this is the known-good combination:
 | `EMBED_MAX_CHARS` | `6000` | Chunk split threshold |
 | `FILING_MODE` | `propose` | `propose` or `auto` — whether filing proposals apply themselves |
 | `FILING_CONFIDENCE_MIN` | `0.85` | Auto-apply confidence floor |
-| `FILING_LOW_CONF_NODE` | *(empty)* | Catch-all node. Auto mode routes below-floor items here (original proposal kept in the rationale); empty leaves them pending. Also where single-exchange captures go without a model call — see the capture proxy below, where it is **required** |
+| `FILING_LOW_CONF_NODE` | *(empty)* | Auto mode: catch-all node for below-floor items (original proposal kept in the rationale); empty leaves them pending |
 | `FILING_INTERVAL_S` | `600` | Filing-proposal cycle period |
 | `FILING_BATCH` | `10` | Max files proposed per cycle |
 
@@ -144,18 +144,31 @@ converges onto the same uuids and `replace_chunks` carries existing embeddings
 forward — reopening a conversation re-embeds only what changed. Conversation
 uuids are random: two chats that open with identical text are two chats.
 
-`FILING_LOW_CONF_NODE` must be set when the proxy is in use. The filing
-agent's own calls to `CHAT_URL` come back through the proxy and land in
-`.staging` as single-exchange transcripts; those are routed to the catch-all
-without a model call, which is what stops the filing agent generating one new
-candidate for every candidate it consumes.
+**One narrow exception to capturing everything.** A client may identify
+itself with `X-Capture-Client: <name>`, and if that name is in
+`CAPTURE_NOLOG_CLIENTS` the exchange is proxied normally but no transcript is
+written. It exists for the filing agent, whose own calls to `CHAT_URL` now
+return through the proxy: their system prompt is `CLAUDE.md` plus every
+`Scope.md`, their user prompt quotes a file already in the vault, and their
+verdict is already persisted in `filing_proposals`. Archiving them would
+duplicate the vault into itself on every cycle, and — because a transcript in
+`.staging` is a filing candidate — would hand the filing agent one new
+candidate for every candidate it consumed, forever.
+
+It is an allowlist, not a boolean opt-out: a client cannot suppress itself by
+inventing a name, the accepted names are configured here rather than by the
+caller, and an unrecognised value is captured and indexed like anything else.
+Suppressed exchanges still increment `capture_suppressed_total{client}`, so
+they are unarchived but not unaccounted for. This is not a security boundary
+— anything that can reach the endpoint can send a known name — but the
+default is inclusive, so nothing falls out of the archive by omission.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `CAPTURE_UPSTREAM` | `http://127.0.0.1:8000` | Where to forward |
 | `CAPTURE_PORT` | `8010` | Informational; uvicorn owns the real bind |
 | `CAPTURE_DIR` | `.staging/Chats/Live Capture` | Vault-relative transcript folder |
-| `CAPTURE_IDLE_S` | `2700` | Quiet period before a conversation is written |
+| `CAPTURE_IDLE_S` | `1800` | Quiet period before a conversation is written |
 | `CAPTURE_MAX_OPEN_S` | `43200` | Safety valve for a conversation that never goes quiet |
 | `CAPTURE_REOPEN_S` | `604800` | How long a written conversation stays reopenable |
 | `CAPTURE_SWEEP_S` | `60` | Flush/retry tick |
@@ -164,9 +177,11 @@ candidate for every candidate it consumes.
 | `CAPTURE_MAX_BODY` | `67108864` | Cap on the copy kept of a non-streamed response |
 | `CAPTURE_TITLE_MAX` | `60` | Title length taken from the first user message |
 | `CAPTURE_CONNECT_TIMEOUT_S` | `5` | Upstream connect timeout; there is no read timeout |
+| `CAPTURE_NOLOG_CLIENTS` | `agentmemory-filing` | Comma-separated `X-Capture-Client` names whose exchanges are proxied but never written |
 
-Clients may send `X-Capture-Conversation-Id` (name your own conversation —
-an alert-run id, say) and `X-Capture-Title`. Neither can suppress capture.
+Clients may also send `X-Capture-Conversation-Id` (name your own conversation
+— an alert-run id, say) and `X-Capture-Title`. Neither affects whether an
+exchange is captured.
 
 Smoke test: `python tests/test_capture.py` runs a fake upstream and the real
 proxy against a scratch vault and asserts on both the rendered markdown and
