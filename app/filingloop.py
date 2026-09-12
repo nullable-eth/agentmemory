@@ -55,7 +55,11 @@ def _dest_and_link(rel: str, node: str) -> tuple[str, str]:
     """Destination path + project wikilink, by source location. The em-dash
     is U+2014, exactly as existing files use it."""
     name = rel.rsplit("/", 1)[-1]
-    if rel.startswith(".staging/Chats/Full Transcripts/"):
+    # Any transcript under .staging/Chats/ files into the node's transcript
+    # folder — 'Full Transcripts/' from the export unpacker, 'Live Capture/'
+    # from the model proxy. Without this the capture path falls through to the
+    # generic branch and lands in the node root beside Scope.md.
+    if rel.startswith(".staging/Chats/"):
         return (f"{node}/Chats/Full Transcripts/{name}",
                 f"[[../../{node} \u2014 Index|{node}]]")
     if rel.startswith(".staging/Project Files/"):
