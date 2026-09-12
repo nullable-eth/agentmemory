@@ -105,9 +105,72 @@ Any OpenAI-compatible servers work; this is the known-good combination:
 | `EMBED_MAX_CHARS` | `6000` | Chunk split threshold |
 | `FILING_MODE` | `propose` | `propose` or `auto` — whether filing proposals apply themselves |
 | `FILING_CONFIDENCE_MIN` | `0.85` | Auto-apply confidence floor |
-| `FILING_LOW_CONF_NODE` | *(empty)* | Auto mode: catch-all node for below-floor items (original proposal kept in the rationale); empty leaves them pending |
+| `FILING_LOW_CONF_NODE` | *(empty)* | Catch-all node. Auto mode routes below-floor items here (original proposal kept in the rationale); empty leaves them pending. Also where single-exchange captures go without a model call — see the capture proxy below, where it is **required** |
 | `FILING_INTERVAL_S` | `600` | Filing-proposal cycle period |
 | `FILING_BATCH` | `10` | Max files proposed per cycle |
+
+## Capture proxy (second entrypoint)
+
+Same image, different command: an OpenAI-API-transparent tee that sits in
+front of any llama.cpp/OpenAI-compatible server and archives every
+conversation that crosses it into the vault as markdown the scanner already
+knows how to chunk. Zero client changes — point the Service at the proxy and
+let it forward to the model on localhost.
+
+```
+docker run -p 8010:8010 \
+  -e CAPTURE_UPSTREAM=http://127.0.0.1:8000 -e VAULT_ROOT=/vault \
+  -v /path/to/vault:/vault \
+  ghcr.io/nullable-eth/agentmemory:latest \
+  uvicorn proxy.main:app --host 0.0.0.0 --port 8010
+```
+
+It holds no API key: `Authorization` is forwarded verbatim, so the upstream
+keeps enforcing its own auth exactly as before. Every path is proxied;
+`/v1/chat/completions` is additionally captured, and anything else that could
+generate is counted in `capture_uncaptured_total`. Its own surface lives under
+`/__capture/` (`healthz`, `metrics`, `status`).
+
+**Conversations are buffered, not streamed to disk.** A conversation lives in
+`<capture dir>/.index/<uuid>.json` until it has been quiet for
+`CAPTURE_IDLE_S`, and only then becomes markdown. Both the scanner and the
+filing agent glob `*.md`, so nothing in `.index/` is ever indexed, embedded or
+filed. That is deliberate: without it, an agent that searches memory mid-run
+retrieves its own half-formed reasoning from ten minutes ago and cannot tell
+it apart from an archived conclusion.
+
+Message uuids are `uuid5(conversation_uuid, content_key)`, so re-sent history
+converges onto the same uuids and `replace_chunks` carries existing embeddings
+forward — reopening a conversation re-embeds only what changed. Conversation
+uuids are random: two chats that open with identical text are two chats.
+
+`FILING_LOW_CONF_NODE` must be set when the proxy is in use. The filing
+agent's own calls to `CHAT_URL` come back through the proxy and land in
+`.staging` as single-exchange transcripts; those are routed to the catch-all
+without a model call, which is what stops the filing agent generating one new
+candidate for every candidate it consumes.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CAPTURE_UPSTREAM` | `http://127.0.0.1:8000` | Where to forward |
+| `CAPTURE_PORT` | `8010` | Informational; uvicorn owns the real bind |
+| `CAPTURE_DIR` | `.staging/Chats/Live Capture` | Vault-relative transcript folder |
+| `CAPTURE_IDLE_S` | `2700` | Quiet period before a conversation is written |
+| `CAPTURE_MAX_OPEN_S` | `43200` | Safety valve for a conversation that never goes quiet |
+| `CAPTURE_REOPEN_S` | `604800` | How long a written conversation stays reopenable |
+| `CAPTURE_SWEEP_S` | `60` | Flush/retry tick |
+| `CAPTURE_QUEUE_MAX` | `256` | Pending capture records; oldest dropped past this |
+| `CAPTURE_MAX_CONVERSATIONS` | `500` | In-memory ceiling, hit only during a long vault outage |
+| `CAPTURE_MAX_BODY` | `67108864` | Cap on the copy kept of a non-streamed response |
+| `CAPTURE_TITLE_MAX` | `60` | Title length taken from the first user message |
+| `CAPTURE_CONNECT_TIMEOUT_S` | `5` | Upstream connect timeout; there is no read timeout |
+
+Clients may send `X-Capture-Conversation-Id` (name your own conversation —
+an alert-run id, say) and `X-Capture-Title`. Neither can suppress capture.
+
+Smoke test: `python tests/test_capture.py` runs a fake upstream and the real
+proxy against a scratch vault and asserts on both the rendered markdown and
+what `vaultio.chunk_transcript` makes of it.
 
 ## Run
 

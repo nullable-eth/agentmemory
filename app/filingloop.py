@@ -297,6 +297,44 @@ async def _candidates() -> list[tuple[str, str]]:
     return out
 
 
+def _unclassified(fm: dict, nodes: list[str]) -> dict | None:
+    """Route a single-exchange proxy capture to the catch-all without asking
+    the model. Returns a synthetic proposal, or None if this file should be
+    classified normally.
+
+    This is what stops the filing agent feeding itself. Its own calls to
+    CHAT_URL now come back through the capture proxy and land in .staging as
+    transcripts, and they are always exactly one exchange: one system prompt,
+    one user prompt, one reply, never continued. Classifying them would have
+    every candidate consumed produce a new candidate, forever, at a steady
+    rate — not an explosion, just a treadmill that permanently saturates
+    FILING_BATCH with the agent's own exhaust and starves real material.
+
+    A genuine single-turn human chat is routed the same way. It stays fully
+    indexed and searchable either way; what the catch-all buys it is a node,
+    which is more than it had sitting in .staging.
+    """
+    if fm.get("capture") != "proxy":
+        return None
+    try:
+        if int(fm.get("exchanges") or 0) > 1:
+            return None
+    except (TypeError, ValueError):
+        return None
+    if not FILING_LOW_CONF_NODE or FILING_LOW_CONF_NODE not in nodes:
+        # Without a catch-all there is nowhere deterministic to put these, so
+        # they fall through to classification — which re-opens the treadmill
+        # described above. Loud, because it is not obvious from the outside.
+        log.warning("filing: FILING_LOW_CONF_NODE is unset or not a node (%r); "
+                    "single-exchange captures will be sent to the model, and "
+                    "the filing agent will classify its own output",
+                    FILING_LOW_CONF_NODE)
+        return None
+    return {"node": FILING_LOW_CONF_NODE, "tags": [], "confidence": 0.0,
+            "rationale": "single-exchange capture; routed to the catch-all "
+                         "without classification"}
+
+
 async def run_cycle() -> None:
     """One filing pass. filing_loop guards the whole body, so nothing here
     may kill the loop."""
@@ -316,21 +354,29 @@ async def run_cycle() -> None:
                 fm = vaultio.parse_frontmatter(text)
                 m = vaultio.FM_RE.match(text)
                 body = text[m.end():] if m else text
-                try:
-                    raw = await _chat(client, system, _user_prompt(rel, fm, body))
-                except (httpx.HTTPError, KeyError, ValueError, IndexError) as e:
-                    log.warning("filing: chat call failed for %s: %s", rel, e)
-                    continue
-                parsed = _parse_reply(raw, nodes)
-                if parsed is None:
-                    log.warning("filing: unusable reply for %s: %.300s", rel, raw)
-                    continue
+                parsed = _unclassified(fm, nodes)
+                synthetic = parsed is not None
+                if not synthetic:
+                    try:
+                        raw = await _chat(client, system,
+                                          _user_prompt(rel, fm, body))
+                    except (httpx.HTTPError, KeyError, ValueError, IndexError) as e:
+                        log.warning("filing: chat call failed for %s: %s", rel, e)
+                        continue
+                    parsed = _parse_reply(raw, nodes)
+                    if parsed is None:
+                        log.warning("filing: unusable reply for %s: %.300s",
+                                    rel, raw)
+                        continue
                 # Auto-mode catch-all: below-floor items reroute to the
                 # configured catch-all node (original proposal preserved in
                 # the rationale, so a later audit can promote them out).
                 below = parsed["confidence"] < FILING_CONFIDENCE_MIN
-                rerouted = False
-                if (FILING_MODE == "auto" and below
+                # A synthetic proposal already names the catch-all and carries
+                # an honest rationale; rewriting it would claim a model call
+                # that never happened.
+                rerouted = synthetic
+                if (FILING_MODE == "auto" and below and not synthetic
                         and FILING_LOW_CONF_NODE
                         and FILING_LOW_CONF_NODE in nodes):
                     parsed = {
