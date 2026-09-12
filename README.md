@@ -109,109 +109,23 @@ Any OpenAI-compatible servers work; this is the known-good combination:
 | `FILING_INTERVAL_S` | `600` | Filing-proposal cycle period |
 | `FILING_BATCH` | `10` | Max files proposed per cycle |
 
-## Capture proxy (second entrypoint)
+## Capture proxy — moved out
 
-Same image, different command: an OpenAI-API-transparent tee that sits in
-front of any llama.cpp/OpenAI-compatible server and archives every
-conversation that crosses it into the vault as markdown the scanner already
-knows how to chunk. Zero client changes — point the Service at the proxy and
-let it forward to the model on localhost.
+The proxy that fed this vault from the live model endpoint now lives in
+**nullable-eth/llm-gateway**, along with context compaction and tool calling.
+It stopped being an agentmemory input adapter once it started doing things the
+vault does not care about; logging here is one link in its chain rather than
+its purpose.
 
-```
-docker run -p 8010:8010 \
-  -e CAPTURE_UPSTREAM=http://127.0.0.1:8000 -e VAULT_ROOT=/vault \
-  -v /path/to/vault:/vault \
-  ghcr.io/nullable-eth/agentmemory:latest \
-  uvicorn proxy.main:app --host 0.0.0.0 --port 8010
-```
+What remains here is the contract it writes against: transcripts land in
+`.staging/Chats/Live Capture/` and are chunked by `vaultio.chunk_transcript`
+exactly like anything the export importer produces. The gateway keeps a
+verbatim copy of `app/vaultio.py` in its tests to prove both halves still
+agree — **refresh it there when this file changes.**
 
-It holds no API key: `Authorization` is forwarded verbatim, so the upstream
-keeps enforcing its own auth exactly as before. Every path is proxied;
-`/v1/chat/completions` is additionally captured, and anything else that could
-generate is counted in `capture_uncaptured_total`. Its own surface lives under
-`/__capture/` (`healthz`, `metrics`, `status`).
-
-**Conversations are buffered, not streamed to disk.** A conversation lives in
-`<capture dir>/.index/<uuid>.json` until it has been quiet for
-`CAPTURE_IDLE_S`, and only then becomes markdown. Both the scanner and the
-filing agent glob `*.md`, so nothing in `.index/` is ever indexed, embedded or
-filed. That is deliberate: without it, an agent that searches memory mid-run
-retrieves its own half-formed reasoning from ten minutes ago and cannot tell
-it apart from an archived conclusion.
-
-Message uuids are `uuid5(conversation_uuid, content_key)`, so re-sent history
-converges onto the same uuids and `replace_chunks` carries existing embeddings
-forward — reopening a conversation re-embeds only what changed. Conversation
-uuids are random: two chats that open with identical text are two chats.
-
-**One narrow exception to capturing everything.** A client may identify
-itself with `X-Capture-Client: <name>`, and if that name is in
-`CAPTURE_NOLOG_CLIENTS` the exchange is proxied normally but no transcript is
-written. It exists for the filing agent, whose own calls to `CHAT_URL` now
-return through the proxy: their system prompt is `CLAUDE.md` plus every
-`Scope.md`, their user prompt quotes a file already in the vault, and their
-verdict is already persisted in `filing_proposals`. Archiving them would
-duplicate the vault into itself on every cycle, and — because a transcript in
-`.staging` is a filing candidate — would hand the filing agent one new
-candidate for every candidate it consumed, forever.
-
-It is an allowlist, not a boolean opt-out: a client cannot suppress itself by
-inventing a name, the accepted names are configured here rather than by the
-caller, and an unrecognised value is captured and indexed like anything else.
-Suppressed exchanges still increment `capture_suppressed_total{client}`, so
-they are unarchived but not unaccounted for. This is not a security boundary
-— anything that can reach the endpoint can send a known name — but the
-default is inclusive, so nothing falls out of the archive by omission.
-
-**Context compaction.** When a request would overflow the model's window, the
-proxy summarises the middle of the conversation and forwards
-`[system…, state summary, recent tail]` instead, so no client can run the
-model out of context regardless of how it manages history. Because the vault
-already holds the conversation verbatim, this costs nothing archivally — the
-transcript stays complete, only the forwarded prompt shrinks, and the reply
-records `context_compacted` so the archive doesn't imply the model saw
-everything. Token counts are exact, via the server's own `/apply-template`
-and `/tokenize`; the window size comes from `/props`.
-
-The proxy holds no API key and does not start holding one for this: its
-`/props`, `/tokenize` and summarising calls reuse the **caller's**
-`Authorization` header, so they are made on behalf of someone already
-entitled to use the model. No header, no compaction. Every failure path —
-tokenizer unavailable, summariser refusing, a tail that is itself over budget
-— forwards the request unchanged rather than mangling it, and a cut is never
-placed where it would separate an assistant `tool_calls` from its `tool`
-result. Summaries are cached by the span they cover, so a client that resends
-its whole history every turn pays for one summary rather than one per turn.
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `CAPTURE_UPSTREAM` | `http://127.0.0.1:8000` | Where to forward |
-| `CAPTURE_PORT` | `8010` | Informational; uvicorn owns the real bind |
-| `CAPTURE_DIR` | `.staging/Chats/Live Capture` | Vault-relative transcript folder |
-| `CAPTURE_IDLE_S` | `1800` | Quiet period before a conversation is written |
-| `CAPTURE_MAX_OPEN_S` | `43200` | Safety valve for a conversation that never goes quiet |
-| `CAPTURE_REOPEN_S` | `604800` | How long a written conversation stays reopenable |
-| `CAPTURE_SWEEP_S` | `60` | Flush/retry tick |
-| `CAPTURE_QUEUE_MAX` | `256` | Pending capture records; oldest dropped past this |
-| `CAPTURE_MAX_CONVERSATIONS` | `500` | In-memory ceiling, hit only during a long vault outage |
-| `CAPTURE_MAX_BODY` | `67108864` | Cap on the copy kept of a non-streamed response |
-| `CAPTURE_TITLE_MAX` | `60` | Title length taken from the first user message |
-| `CAPTURE_CONNECT_TIMEOUT_S` | `5` | Upstream connect timeout; there is no read timeout |
-| `CAPTURE_NOLOG_CLIENTS` | `agentmemory-filing` | Comma-separated `X-Capture-Client` names whose exchanges are proxied but never written |
-| `CAPTURE_COMPACT` | `1` | Summarise the middle of a conversation that would overflow the context |
-| `CAPTURE_COMPACT_AT` | `0.75` | Fraction of `n_ctx` a prompt may occupy before compaction |
-| `CAPTURE_COMPACT_KEEP_TAIL` | `8` | Recent messages kept verbatim |
-| `CAPTURE_COMPACT_RESERVE` | `8192` | Generation headroom assumed when a request sets no `max_tokens` |
-| `CAPTURE_COMPACT_SUMMARY_TOKENS` | `2000` | Cap on the state summary |
-| `CAPTURE_COMPACT_CACHE_MAX` | `256` | Cached summaries, keyed by the span they cover |
-
-Clients may also send `X-Capture-Conversation-Id` (name your own conversation
-— an alert-run id, say) and `X-Capture-Title`. Neither affects whether an
-exchange is captured.
-
-Smoke test: `python tests/test_capture.py` runs a fake upstream and the real
-proxy against a scratch vault and asserts on both the rendered markdown and
-what `vaultio.chunk_transcript` makes of it.
+`filingloop` identifies itself to the gateway with `X-Capture-Client:
+agentmemory-filing`, so its own classification calls are proxied but never
+written. Without that, every candidate it consumed would produce a new one.
 
 ## Run
 
