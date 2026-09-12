@@ -62,6 +62,7 @@ class Conversation:
         self.title = ""
         self.client_id = client_id
         self.messages: list = []
+        self.digests: list = []   # one payload hash per message, always held
         self.keys: list = []
         self.uuids: list = []
         self.path: str | None = None
@@ -69,19 +70,21 @@ class Conversation:
         self.last_activity = time.time()
         self.opened = time.time()
         self.dirty = False        # index write owed to the vault
+        # False once compacted: digests/keys/uuids are intact but the message
+        # bodies live only in the index file. Rehydrate before rendering or
+        # appending.
+        self.hydrated = True
 
     # ------------------------------------------------------------ identity
-    def payloads(self) -> list:
-        return [m.payload() for m in self.messages]
-
     def extend(self, new_msgs: list, ts: str) -> None:
-        known = self.payloads()
-        fresh = [m.payload() for m in new_msgs]
-        for m, occ in zip(new_msgs, identity.assign_occurrences(known, fresh)):
+        fresh = [identity.digest(m.payload()) for m in new_msgs]
+        occurrences = identity.assign_occurrences(self.digests, fresh)
+        for m, d, occ in zip(new_msgs, fresh, occurrences):
             key = identity.key_for(m.payload(), occ)
             if not m.ts:
                 m.ts = ts
             self.messages.append(m)
+            self.digests.append(d)
             self.keys.append(key)
             self.uuids.append(identity.message_uuid(self.uuid, key))
         self.updated = ts
@@ -98,6 +101,7 @@ class Conversation:
                 "path": self.path, "flushed": self.flushed,
                 "last_activity": self.last_activity, "opened": self.opened,
                 "keys": self.keys, "uuids": self.uuids,
+                "digests": self.digests,
                 "messages": [m.as_dict() for m in self.messages]}
 
     @staticmethod
@@ -114,7 +118,36 @@ class Conversation:
         c.keys = list(d.get("keys") or [])
         c.uuids = list(d.get("uuids") or [])
         c.messages = [Msg.from_dict(m) for m in d.get("messages") or []]
+        c.digests = list(d.get("digests") or [])
+        if len(c.digests) != len(c.messages):        # index written pre-digests
+            c.digests = [identity.digest(m.payload()) for m in c.messages]
         return c
+
+    def compact(self) -> None:
+        """Drop message bodies, keep everything matching needs.
+
+        A flushed conversation stays reopenable for CAPTURE_REOPEN_S — a week
+        by default — and holding every message's text for that long is what
+        would turn a busy day of long-context chats into hundreds of MB of
+        resident memory. Alignment runs on digests, so the bodies are dead
+        weight until someone actually continues the conversation.
+        """
+        self.messages = []
+        self.hydrated = False
+
+    def rehydrate(self) -> bool:
+        """Reload message bodies from the index file. Needed before rendering
+        or appending to a compacted conversation."""
+        if self.hydrated:
+            return True
+        try:
+            d = json.loads(self.index_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            log.warning("capture: cannot rehydrate %s: %s", self.uuid, e)
+            return False
+        self.messages = [Msg.from_dict(m) for m in d.get("messages") or []]
+        self.hydrated = True
+        return True
 
     def index_path(self) -> Path:
         return index_dir() / f"{self.uuid}.json"
@@ -122,6 +155,12 @@ class Conversation:
     def save(self) -> bool:
         """Best-effort. A failed index write is owed, not lost: the messages
         are already in memory and the sweeper retries while `dirty` is set."""
+        if not self.hydrated:
+            # to_dict() would serialise an empty message list over the index
+            # file — the very buffer a reopen reads back. A compacted
+            # conversation has no unsaved state by construction, so this is a
+            # no-op rather than a failure.
+            return True
         try:
             write_atomic(self.index_path(),
                          json.dumps(self.to_dict(), ensure_ascii=False))
@@ -153,6 +192,8 @@ class Store:
                 log.warning("capture: unreadable index %s; leaving it alone",
                             f.name)
                 continue
+            if c.flushed:
+                c.compact()       # matchable, but no bodies resident
             self.convs[c.uuid] = c
         self.prune()
         return len(self.convs)
@@ -170,14 +211,15 @@ class Store:
                 pass
 
     # ------------------------------------------------------------ matching
-    def match(self, req_payloads: list, client_id: str):
-        """(conversation, overlap_length, how) or None."""
-        if not req_payloads:
+    def match(self, req_digests: list, req_roles: list, client_id: str):
+        """(conversation, overlap_length, how) or None. Runs on digests, so a
+        compacted conversation matches without loading its bodies."""
+        if not req_digests:
             return None
         if client_id:
             for c in self.convs.values():
                 if c.client_id and c.client_id == client_id:
-                    a = identity.align(c.payloads(), req_payloads, UNLIMITED)
+                    a = identity.align(c.digests, req_digests, UNLIMITED)
                     return (c, a[1] if a else 0, "client-id")
         best = None
         now = time.time()
@@ -188,12 +230,12 @@ class Store:
             # prefix-extension rule) so a re-fired identical alert starts its
             # own conversation instead of being adopted into the last run.
             # Open: one message of slack, which is a regenerate.
-            a = identity.align(c.payloads(), req_payloads,
+            a = identity.align(c.digests, req_digests,
                                0 if c.flushed else 1)
             if not a:
                 continue
             _, length = a
-            if not any(p[0] != "system" for p in req_payloads[:length]):
+            if not any(r != "system" for r in req_roles[:length]):
                 continue
             if best is None or length > best[1]:
                 best = (c, length, "reopen" if c.flushed else "open")
@@ -202,11 +244,23 @@ class Store:
     # -------------------------------------------------------------- apply
     def apply(self, rec: dict) -> Conversation:
         req = rec.get("messages") or []
-        hit = self.match([m.payload() for m in req], rec.get("client_id") or "")
+        hit = self.match([identity.digest(m.payload()) for m in req],
+                         [m.role for m in req], rec.get("client_id") or "")
+        conv = overlap = how = None
         if hit:
-            conv, overlap, how = hit
-            conv.flushed = False
-        else:
+            candidate, overlap, how = hit
+            if candidate.rehydrate():
+                candidate.flushed = False
+                conv = candidate
+            else:
+                # The index file is gone or unreadable, so the archived bodies
+                # can't be recovered. Appending would write a transcript
+                # missing its own history, so start fresh and leave the
+                # existing file untouched.
+                log.warning("capture: %s unrehydratable; starting a new "
+                            "conversation rather than truncating it",
+                            candidate.uuid)
+        if conv is None:
             conv = Conversation(identity.new_conversation_uuid(), rec["ts"],
                                 rec.get("client_id") or "")
             self.convs[conv.uuid] = conv
@@ -276,6 +330,8 @@ class Store:
     def flush(self, conv: Conversation) -> str:
         """Render and write. Raises OSError so the caller can retry."""
         t0 = time.monotonic()
+        if not conv.rehydrate():
+            raise OSError(f"cannot rehydrate {conv.uuid} to render it")
         target = self.target(conv)
         md = render.render_transcript(
             {"uuid": conv.uuid, "title": conv.title or "untitled conversation",
@@ -292,6 +348,9 @@ class Store:
         write_atomic(target, md)
         conv.path = target.relative_to(Path(config.VAULT_ROOT)).as_posix()
         conv.flushed = True
-        conv.save()
+        # Compact only once the index file is safely on disk — that file is
+        # what a reopen rehydrates from.
+        if conv.save():
+            conv.compact()
         metrics.FLUSH_LAT.observe(time.monotonic() - t0)
         return conv.path

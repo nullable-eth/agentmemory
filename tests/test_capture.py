@@ -226,6 +226,19 @@ async def run_all():
     check("existing uuids unchanged (embeddings survive)",
           [x[0] for x in r][:5] == first_uuids)
 
+    # --------------------------------------------------------------- [2b]
+    print("\n[2b] flushed conversations hold no message bodies in memory")
+    conv = next(c for c in writer.store.convs.values()
+                if c.path and "qwen-coder" in c.path)
+    check("compacted after flush", not conv.hydrated and conv.messages == [],
+          f"hydrated={conv.hydrated} messages={len(conv.messages)}")
+    check("still matchable — digests kept for every message",
+          len(conv.digests) == 7, str(len(conv.digests)))
+    check("index file still holds the bodies",
+          len(json.loads(conv.index_path().read_text())["messages"]) == 7)
+    check("a compacted save cannot blank the index", conv.save()
+          and len(json.loads(conv.index_path().read_text())["messages"]) == 7)
+
     # ---------------------------------------------------------------- [3]
     print("\n[3] trimmed history — client drops the oldest turns")
     NEXT = {"content": "Because latest is mutable."}

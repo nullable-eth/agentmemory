@@ -32,6 +32,20 @@ def new_conversation_uuid() -> str:
     return str(uuid.uuid4())
 
 
+def digest(payload) -> str:
+    """Occurrence-free hash of one message payload.
+
+    Alignment only ever tests payloads for equality, so it can run on these
+    instead of on the text — which is what lets a flushed conversation stay
+    matchable for its whole reopen window while holding no message bodies in
+    memory. Must NOT include the occurrence counter: the counter is assigned
+    per conversation, and a trimmed request computes a different one for the
+    same message.
+    """
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
+
+
 def key_for(payload, occurrence: int) -> str:
     """Stable content key for one message within one conversation."""
     raw = json.dumps([payload, occurrence], ensure_ascii=False, sort_keys=True)
@@ -69,16 +83,14 @@ def align(known: list, req: list, tail_gap: int = 0):
 
 
 def assign_occurrences(known: list, new: list) -> list:
-    """Occurrence counter for each new payload: how many identical payloads
+    """Occurrence counter for each new message: how many identical messages
     already precede it, counting both the known history and earlier entries
-    in this same batch."""
+    in this same batch. Operates on digests, so it needs no message bodies."""
     counts: dict[str, int] = {}
-    for p in known:
-        k = json.dumps(p, ensure_ascii=False, sort_keys=True)
-        counts[k] = counts.get(k, 0) + 1
+    for d in known:
+        counts[d] = counts.get(d, 0) + 1
     out = []
-    for p in new:
-        k = json.dumps(p, ensure_ascii=False, sort_keys=True)
-        out.append(counts.get(k, 0))
-        counts[k] = counts.get(k, 0) + 1
+    for d in new:
+        out.append(counts.get(d, 0))
+        counts[d] = counts.get(d, 0) + 1
     return out

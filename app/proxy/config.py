@@ -15,7 +15,7 @@ PORT = int(os.environ.get("CAPTURE_PORT", "8010"))
 # long. This is the whole point of the buffer: an agent mid-run must not be
 # able to retrieve its own in-flight reasoning back out of RAG and mistake it
 # for archived knowledge.
-IDLE_S = int(os.environ.get("CAPTURE_IDLE_S", "2700"))            # 45 min
+IDLE_S = int(os.environ.get("CAPTURE_IDLE_S", "1800"))            # 30 min
 # Safety valve: a conversation that never goes quiet still gets written.
 MAX_OPEN_S = int(os.environ.get("CAPTURE_MAX_OPEN_S", "43200"))   # 12 h
 SWEEP_S = int(os.environ.get("CAPTURE_SWEEP_S", "60"))
