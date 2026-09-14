@@ -74,9 +74,20 @@ async def store_embeddings(c, pairs):
 
 
 async def hybrid_search(c, *, qvec, qtext, node=None, tags=None,
-                        after=None, before=None, k=10):
+                        after=None, before=None, sender=None, k=10):
     """RRF fusion of dense (cosine) + lexical (websearch tsquery) rank lists.
-    Either leg may be absent (no embedding yet / stopword-only query)."""
+    Either leg may be absent (no embedding yet / stopword-only query).
+
+    sender filters to one speaker, and it is the difference between "what was
+    said about the bond interface" and "what the OPERATOR DECIDED about the bond
+    interface". Measured on the live archive: of the top 50 hits for an agent's
+    query about a known-ignored alert, 4 were the operator and 46 were the
+    assistant — including the agent's own earlier reports about that same alert.
+    The decision was at rank 12 and nobody reached it.
+
+    Note that sender is NULL for the older full-transcript imports, whose format
+    carried no speaker markers, so filtering excludes them. That is a real
+    trade and the caller has to want it."""
     return await c.fetch(
         """WITH filt AS (
              SELECT ch.id, ch.document_id, ch.message_uuid, ch.ordinal,
@@ -87,6 +98,7 @@ async def hybrid_search(c, *, qvec, qtext, node=None, tags=None,
                AND ($4::text[] IS NULL OR d.tags && $4)
                AND ($5::date  IS NULL OR d.date >= $5)
                AND ($6::date  IS NULL OR d.date <= $6)
+               AND ($8::text  IS NULL OR ch.sender = $8)
            ),
            dense AS (
              SELECT id, row_number() OVER (ORDER BY embedding <=> $1::vector) rnk
@@ -110,7 +122,7 @@ async def hybrid_search(c, *, qvec, qtext, node=None, tags=None,
                   left(ft.text, 500) AS snippet
            FROM fused f JOIN filt ft ON ft.id = f.id
            ORDER BY f.score DESC LIMIT $7""",
-        _vec(qvec), qtext or "", node, tags, after, before, k)
+        _vec(qvec), qtext or "", node, tags, after, before, k, sender)
 
 
 # ---------------------------------------------------- filing proposals (P4)

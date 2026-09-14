@@ -43,7 +43,8 @@ async def _qvec(q: str):
         return None                       # lexical leg still answers
 
 
-async def do_search(q: str, node=None, tags=None, after=None, before=None, k=10):
+async def do_search(q: str, node=None, tags=None, after=None, before=None,
+                    sender=None, k=10):
     metrics.SEARCHES.inc()
     t0 = time.monotonic()
     qvec = await _qvec(q)
@@ -51,7 +52,7 @@ async def do_search(q: str, node=None, tags=None, after=None, before=None, k=10)
     async with p.acquire() as c:
         rows = await db.hybrid_search(
             c, qvec=qvec, qtext=q, node=node, tags=tags,
-            after=after, before=before, k=k)
+            after=after, before=before, sender=sender, k=k)
     metrics.SEARCH_LAT.observe(time.monotonic() - t0)
     return {"query": q, "dense": qvec is not None,
             "hits": [{**dict(r), "date": str(r["date"]) if r["date"] else None,
@@ -101,17 +102,24 @@ mcp = FastMCP("agentmemory", stateless_http=True, streamable_http_path="/")
 @mcp.tool()
 async def search_memory(query: str, node: str | None = None,
                         tags: str | None = None, after: str | None = None,
-                        before: str | None = None, k: int = 10) -> dict:
+                        before: str | None = None, sender: str | None = None,
+                        k: int = 10) -> dict:
     """Hybrid semantic + exact-keyword search over the entire conversation
     archive (all chat transcripts, project files, memory dossiers). Use for
     any question about past conversations, decisions, designs, or facts —
     both natural-language questions and exact identifiers/config keys work.
     Optional filters: node (top-level topic folder), tags (comma-separated),
-    after/before (YYYY-MM-DD). Returns scored hits with message_uuid for
-    follow-up via get_context."""
+    after/before (YYYY-MM-DD), sender ("User" for what the operator themselves
+    said, "Claude" for what an assistant said). Use sender="User" when you need
+    a DECISION rather than a discussion -- an instruction like "ignore this for
+    now" is theirs, and unfiltered results are mostly assistant prose that
+    buries it. Older full-transcript imports have no sender and are excluded
+    when this is set. Returns scored hits with message_uuid for follow-up via
+    get_context."""
     return await do_search(query, node=node,
                            tags=tags.split(",") if tags else None,
-                           after=after, before=before, k=min(k, 50))
+                           after=after, before=before, sender=sender,
+                           k=min(k, 50))
 
 
 @mcp.tool()
@@ -195,9 +203,9 @@ async def prom():
 @app.get("/search", dependencies=[Depends(read_auth)])
 async def search(q: str, node: str | None = None, tags: str | None = None,
                  after: str | None = None, before: str | None = None,
-                 k: int = Query(10, le=50)):
+                 sender: str | None = None, k: int = Query(10, le=50)):
     return await do_search(q, node=node, tags=tags.split(",") if tags else None,
-                           after=after, before=before, k=k)
+                           after=after, before=before, sender=sender, k=k)
 
 
 @app.get("/context/{message_uuid}", dependencies=[Depends(read_auth)])
