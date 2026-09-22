@@ -12,13 +12,50 @@ from pathlib import Path
 
 import scanner
 from config import IMPORT_INTERVAL_S, VAULT_ROOT
+from importer import jan_threads
 from metrics import CHECK_FAILS, IMPORT_RUNS, LAST_IMPORT
 
 log = logging.getLogger("agentmemory")
 
 INBOX = Path(VAULT_ROOT) / ".imports"
+THREADS = INBOX / "threads"
+ARCHIVE = INBOX / "archive"
 PIPELINE = Path(__file__).parent / "importer" / "import_export.py"
 _lock = asyncio.Lock()
+
+
+def _thread_stats() -> dict:
+    """Map each thread file to (mtime, size) — same stability rule as zips,
+    since a directory copied over CIFS arrives a file at a time."""
+    stats = {}
+    if not THREADS.is_dir():
+        return stats
+    for p in THREADS.rglob("*"):
+        try:
+            if p.is_file():
+                st = p.stat()
+                stats[p] = (st.st_mtime, st.st_size)
+        except OSError:
+            continue
+    return stats
+
+
+async def _run_threads() -> None:
+    """Local-client threads: rendered here rather than by the zip pipeline,
+    which only understands assistant exports."""
+    try:
+        written = await asyncio.to_thread(
+            jan_threads.import_threads, THREADS, Path(VAULT_ROOT), ARCHIVE)
+    except Exception:
+        log.exception("import: thread import failed")
+        IMPORT_RUNS.labels(result="failure").inc()
+        return
+    log.info("import: %d thread transcript(s) written%s", len(written),
+             (": " + ", ".join(written)) if written else "")
+    IMPORT_RUNS.labels(result="success").inc()
+    LAST_IMPORT.set(time.time())
+    await scanner.scan_once()
+    await scanner.embed_drain()
 
 
 def _zip_stats() -> dict:
@@ -59,9 +96,17 @@ async def _run_import(zips: list[Path]) -> bool:
 
 async def import_loop() -> None:
     last: dict = {}
+    last_threads: dict = {}
     failures = 0
     while True:
         try:
+            tcur = await asyncio.to_thread(_thread_stats)
+            if tcur and all(last_threads.get(p) == ms for p, ms in tcur.items()):
+                async with _lock:
+                    last_threads = {}
+                    await _run_threads()
+            else:
+                last_threads = tcur
             current = await asyncio.to_thread(_zip_stats)
             stable = bool(current) and all(
                 last.get(p) == ms for p, ms in current.items())
