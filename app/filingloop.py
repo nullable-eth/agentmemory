@@ -128,9 +128,29 @@ async def apply_proposal(proposal_row) -> str:
 
     dest = Path(VAULT_ROOT) / dest_rel
     if dest.exists():
+        # The filed copy wins, always — it may have been edited, linked or
+        # moved since. But this is not an error either: re-exporting renders
+        # documents that were filed from an earlier export, so a duplicate
+        # lands in .staging every time and used to sit there forever with a
+        # dead proposal, re-read on every cycle.
+        #
+        # Supersede instead: keep the staged copy under .staging/superseded/
+        # (the convention already used for older versions of a note),
+        # unfiled, out of the filing agent's way, and still on disk for an
+        # audit. Nothing is overwritten and nothing is deleted.
+        sup = Path(VAULT_ROOT) / ".staging" / "superseded" / dest.name
+        n = 1
+        while sup.exists():
+            sup = sup.with_name(f"{dest.stem} ({n}){dest.suffix}")
+            n += 1
+        sup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(sup))
+        sup_rel = str(sup.relative_to(VAULT_ROOT)).replace("\\", "/")
         async with pool.acquire() as c:
-            await db.reject_proposal(c, pid, " [destination exists]")
-        raise RuntimeError(f"proposal {pid}: destination exists ({dest_rel})")
+            await db.mark_proposal_applied(c, pid)
+        log.info("filing: %s already filed at %s; staged copy superseded to %s",
+                 rel, dest_rel, sup_rel)
+        return sup_rel
 
     src.write_bytes(stamped.encode("utf-8"))
     dest.parent.mkdir(parents=True, exist_ok=True)
