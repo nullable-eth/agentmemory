@@ -45,7 +45,17 @@ async def replace_chunks(c, document_id: int, rows):
                "WHERE document_id=$1", document_id)}
     await c.execute("DELETE FROM chunks WHERE document_id=$1", document_id)
     ins = []
+    used = set()
     for mu, o, sender, created, text in rows:
+        # (document_id, message_uuid, ordinal) is UNIQUE. A NULL message_uuid
+        # never collides in Postgres, so only real uuids need the guard: if a
+        # caller hands us the same key twice, move the later chunk past the
+        # keys already taken rather than failing the whole document — one bad
+        # note must not cost the vault its index.
+        if mu is not None:
+            while (mu, o) in used:
+                o += 1
+            used.add((mu, o))
         prev = old.get((mu, o))
         emb = prev[1] if prev and prev[0] == text else None
         ins.append((document_id, mu, o, sender, created, text, emb))

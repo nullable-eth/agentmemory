@@ -62,8 +62,16 @@ def _split_long(s: str, limit: int):
 
 
 def chunk_transcript(body: str, limit: int):
-    """Yield (message_uuid, ordinal, sender, created_at, text)."""
+    """Yield (message_uuid, ordinal, sender, created_at, text).
+
+    (message_uuid, ordinal) identifies a chunk within a document, so the
+    ordinal counts on across a message_uuid that appears more than once
+    rather than restarting at 0. A transcript can legitimately repeat one:
+    an append that re-sends the tail, a capture written twice, an edited
+    message kept alongside its original. Restarting would emit the same key
+    twice and the whole document would fail to index."""
     marks = list(MSG_RE.finditer(body))
+    next_ordinal: dict[str, int] = {}
     for i, m in enumerate(marks):
         end = marks[i + 1].start() if i + 1 < len(marks) else len(body)
         seg = body[m.end():end].strip()
@@ -72,8 +80,12 @@ def chunk_transcript(body: str, limit: int):
         sm = SENDER_RE.match(seg)
         sender = sm.group(1) if sm else None
         created = sm.group(2) if sm else None
-        for j, piece in enumerate(_split_long(seg, limit)):
-            yield m.group(1), j, sender, created, piece
+        uuid = m.group(1)
+        j = next_ordinal.get(uuid, 0)
+        for piece in _split_long(seg, limit):
+            yield uuid, j, sender, created, piece
+            j += 1
+        next_ordinal[uuid] = j
 
 
 def chunk_note(body: str, limit: int):
