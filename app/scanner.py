@@ -63,7 +63,18 @@ async def scan_once() -> int:
                     "UPDATE scan_state SET mtime=$2, size=$3, last_seen=now() "
                     "WHERE path=$1", rel, st.st_mtime, st.st_size)
                 continue
-            await index_file(c, rel, text, st.st_mtime)
+            try:
+                await index_file(c, rel, text, st.st_mtime)
+            except Exception:
+                # Per FILE, not per sweep. scan_once() used to index inside the
+                # loop with no guard, so the first file that raised aborted the
+                # whole pass and every pass after it: one malformed note froze
+                # the entire vault's index (and LAST_SCAN with it) until someone
+                # read the logs. Skip it, count it, keep sweeping. The file is
+                # left out of scan_state, so a later fix to it is picked up.
+                log.exception("scan: skipping %s", rel)
+                metrics.SCAN_FILE_ERRORS.inc()
+                continue
             await c.execute(
                 """INSERT INTO scan_state (path, mtime, size, content_hash)
                    VALUES ($1,$2,$3,$4) ON CONFLICT (path) DO UPDATE SET
