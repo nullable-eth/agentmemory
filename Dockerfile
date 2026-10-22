@@ -5,9 +5,16 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /srv/app
+# pydantic capped at 2.13: mcp 1.12.x imports
+# pydantic._internal._typing_extra.eval_type_backport, which pydantic 2.14
+# removed. The 22 Oct rebuild (eMudhra) re-resolved the otherwise unpinned
+# set and pulled pydantic 2.14.1; the image then died at import
+# (TargetDown, ai/agentmemory on whitehorse). Lift the cap with a 2.14-clean
+# mcp.
 RUN pip install --no-cache-dir \
     fastapi==0.115.* uvicorn==0.30.* asyncpg==0.29.* httpx==0.27.* \
     prometheus-client==0.20.* \
+    'pydantic==2.13.*' \
     'mcp>=1.9,<2'
 COPY app/ /srv/app/
 EXPOSE 8080
